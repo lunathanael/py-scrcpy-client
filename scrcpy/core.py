@@ -232,13 +232,13 @@ class Client:
                 packets = codec.parse(raw_h264)
                 for packet in packets:
                     frames = codec.decode(packet)
-                    for frame in frames:
-                        frame = frame.to_ndarray(format="bgr24")
-                        if self.flip:
-                            frame = cv2.flip(frame, 1)
-                        self.last_frame = frame
-                        self.resolution = (frame.shape[1], frame.shape[0])
-                        self.__send_to_listeners(EVENT_FRAME, frame)
+                    frame = frames[-1]
+                    frame = frame.to_ndarray(format="bgr24")
+                    if self.flip:
+                        frame = cv2.flip(frame, 1)
+                    self.last_frame = frame
+                    self.resolution = (frame.shape[1], frame.shape[0])
+                    self.__send_to_listeners(EVENT_FRAME, frame)
             except (BlockingIOError, InvalidDataError):
                 time.sleep(0.01)
                 if not self.block_frame:
