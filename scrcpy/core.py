@@ -26,7 +26,7 @@ class Client:
         self,
         device: Optional[Union[AdbDevice, str, any]] = None,
         max_width: int = 0,
-        bitrate: int = 8000000,
+        bitrate: int = 8_000_000,
         max_fps: int = 0,
         flip: bool = False,
         block_frame: bool = False,
@@ -187,7 +187,10 @@ class Client:
         self.__init_server_connection()
         self.alive = True
         self.__send_to_listeners(EVENT_INIT)
-
+        
+        self.init_codec()
+        print("Client Initialized.")
+        return
         if threaded or daemon_threaded:
             self.stream_loop_thread = threading.Thread(
                 target=self.__stream_loop, daemon=daemon_threaded
@@ -195,6 +198,33 @@ class Client:
             self.stream_loop_thread.start()
         else:
             self.__stream_loop()
+
+    def init_codec(self) -> None:
+        self.codec = CodecContext.create("h264", "r")
+        self.last_frame = None
+        while self.last_frame is None:
+            try:
+                raw_h264 = self.__video_socket.recv(0x10000)
+                if raw_h264 == b"":
+                    raise ConnectionError("Video stream is disconnected")
+                packets = self.codec.parse(raw_h264)
+                for packet in packets:
+                    frames = self.codec.decode(packet)
+                    for frame in frames:
+                        frame = frame.to_ndarray(format="bgr24")
+                        if self.flip:
+                            frame = cv2.flip(frame, 1)
+                        self.last_frame = frame
+                        return
+            except (BlockingIOError, InvalidDataError):
+                time.sleep(0.01)
+                if not self.block_frame:
+                    self.__send_to_listeners(EVENT_FRAME, None)
+            except (ConnectionError, OSError) as e:  # Socket Closed
+                if self.alive:
+                    self.__send_to_listeners(EVENT_DISCONNECT)
+                    self.stop()
+                    raise e
 
     def stop(self) -> None:
         """
@@ -219,6 +249,44 @@ class Client:
             except Exception:
                 pass
 
+    def update_frame(self) -> None:
+        raw_h264 = None
+        self.__video_socket.setblocking(False)  # Non-blocking mode to flush the socket
+        while True:
+            try:
+                #self.__video_socket.recv(1024)  # Adjust buffer size as needed
+                #print("Read old data")
+                import cv2
+
+                raw_h264 = self.__video_socket.recv(1024)
+                packets = self.codec.parse(raw_h264)
+                for packet in packets:
+                    frames = self.codec.decode(packet)
+                    continue
+            except BlockingIOError:
+                break  # Buffer is empty, proceed
+        self.__video_socket.setblocking(True)
+
+        try:
+            raw_h264 = self.__video_socket.recv(0x1024)
+            if raw_h264 == b"":
+                raise ConnectionError("Video stream is disconnected")
+            packets = self.codec.parse(raw_h264)
+            for packet in packets:
+                frames = self.codec.decode(packet)
+                for frame in frames:
+                    frame = frame.to_ndarray(format="bgr24")
+                    if self.flip:
+                        frame = cv2.flip(frame, 1)
+                    self.last_frame = frame
+                    self.resolution = (frame.shape[1], frame.shape[0])
+        except (BlockingIOError, InvalidDataError):
+            time.sleep(0.01)
+        except (ConnectionError, OSError) as e:  # Socket Closed
+            if self.alive:
+                self.__send_to_listeners(EVENT_DISCONNECT)
+                self.stop()
+                raise e
     def __stream_loop(self) -> None:
         """
         Core loop for video parsing
@@ -230,11 +298,9 @@ class Client:
                 if raw_h264 == b"":
                     raise ConnectionError("Video stream is disconnected")
                 packets = codec.parse(raw_h264)
-                if len(packets) > 0:
-                    packet = packets[-1]
+                for packet in packets:
                     frames = codec.decode(packet)
-                    if len(frames) > 0:
-                        frame = frames[-1]
+                    for frame in frames:
                         frame = frame.to_ndarray(format="bgr24")
                         if self.flip:
                             frame = cv2.flip(frame, 1)
